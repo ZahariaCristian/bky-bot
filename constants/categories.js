@@ -1,0 +1,12 @@
+const categories = {
+  "UOMODONNA": "5c8a29c0c5591de8c6244867",
+  "UOMOUOMO": "5c8a29c0c5591de8c6244832",
+  "DONNADONNA": "5c8a29c0c5591de8c624479c",
+  "COPPIE": "5c8a29c0c5591de8c6244731",
+  "AMICI": "5c8a29c0c5591de8c624489a",
+  "ANIMAGEMELLA": "5c8a29c0c5591de8c6244764",
+  "DONNAUOMO": "5c8a29c0c5591de8c62447ce",
+  "TRANS": "65e9956d7db5a8f005a8343d"
+}
+
+module.exports = categories

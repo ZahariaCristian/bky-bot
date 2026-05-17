@@ -1,0 +1,53 @@
+Response {
+  [Symbol(realm)]: null,
+  [Symbol(state)]: {
+    aborted: false,
+    rangeRequested: false,
+    timingAllowPassed: true,
+    requestIncludesCredentials: true,
+    type: 'default',
+    status: 200,
+    timingInfo: {
+      startTime: 813.6725829988718,
+      redirectStartTime: 813.6725829988718,
+      redirectEndTime: 920.3165830001235,
+      postRedirectStartTime: 920.3165830001235,
+      finalServiceWorkerStartTime: 0,
+      finalNetworkResponseStartTime: 0,
+      finalNetworkRequestStartTime: 0,
+      endTime: 0,
+      encodedBodySize: 703,
+      decodedBodySize: 0,
+      finalConnectionTimingInfo: null
+    },
+    cacheState: '',
+    statusText: 'OK',
+    headersList: HeadersList {
+      [Symbol(headers map)]: [Map],
+      [Symbol(headers map sorted)]: null
+    },
+    urlList: [ [URL], [URL] ],
+    body: { stream: undefined }
+  },
+  [Symbol(headers)]: HeadersList {
+    [Symbol(headers map)]: Map(16) {
+      'date' => [Object],
+      'content-type' => [Object],
+      'transfer-encoding' => [Object],
+      'connection' => [Object],
+      'cache-control' => [Object],
+      'content-language' => [Object],
+      'referrer-policy' => [Object],
+      'x-content-type-options' => [Object],
+      'x-frame-options' => [Object],
+      'vary' => [Object],
+      'x-cache' => [Object],
+      'set-cookie' => [Object],
+      'cf-cache-status' => [Object],
+      'server' => [Object],
+      'cf-ray' => [Object],
+      'content-encoding' => [Object]
+    },
+    [Symbol(headers map sorted)]: null
+  }
+}

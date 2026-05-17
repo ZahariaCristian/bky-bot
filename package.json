@@ -1,0 +1,32 @@
+{
+  "name": "mirtom_bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "axios-socks5-agent": "^1.0.5",
+    "body-parser": "^1.20.2",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "form-data": "^4.0.0",
+    "fs": "^0.0.1-security",
+    "node-fetch": "^3.3.2",
+    "nodemon": "^3.0.1",
+    "sharp": "^0.32.6",
+    "signale": "^1.4.0",
+    "telegraf": "^4.15.0",
+    "uuid": "^9.0.1"
+  },
+  "signale": {
+    "displayDate": true,
+    "displayTimestamp": true
+  }
+}
