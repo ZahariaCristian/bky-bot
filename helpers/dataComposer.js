@@ -143,22 +143,32 @@ const secondStepBody = (
   //adding crop values
   pictures = pictures.map((p, i) => ({
     ...p,
-    crop: picsAudit[i]?.crop || null,
+    crop: picsAudit?.[i]?.crop || null,
   }));
 
   console.log(picsAudit);
 
   const mappedImages = pictures
-    .filter((p) => p?.uuid && p?.histogram && p?.fingerprint && p?.url)
+    .filter((p) => p?.uuid && (p?.url || p?.src))
     .map((p, i) => ({
       uuid: p.uuid,
       histogram: p.histogram,
       fingerprint: p.fingerprint,
-      src: p.url,
+      src: p.url || p.src,
       isCover: i === 0 ? true : false, //TODO Main image
       crop: formatCrop(p.crop),
       rotate: p.rotate || 0,
     }));
+
+  const expectedImageCount = pictures.length;
+  if (mappedImages.length !== expectedImageCount) {
+    const error = new Error(
+      `BAKECAINCONTRII_IMAGE_COUNT_MISMATCH: attese ${expectedImageCount}, pronte per il salvataggio ${mappedImages.length}.`
+    );
+    error.code = "BAKECAINCONTRII_IMAGE_COUNT_MISMATCH";
+    error.stage = "images-step";
+    throw error;
+  }
 
   console.log("starting mapping images cropdata")
   console.log(mappedImages)
@@ -348,16 +358,25 @@ const suspendPostHeader = (cookie, baseURL, jHeader) => ({
 //ADV EDIT
 const editPostBody = (adv, csrfmiddlewaretoken, private_code, pictures) => {
   const mappedImages = pictures
-    .filter((p) => p?.uuid && p?.histogram && p?.fingerprint && p?.url)
+    .filter((p) => p?.uuid && (p?.url || p?.src))
     .map((p, i) => ({
       uuid: p.uuid,
       histogram: p.histogram,
       fingerprint: p.fingerprint,
-      src: p.url,
+      src: p.url || p.src,
       isCover: i === 0 ? true : false, //TODO Main image
       crop: formatCrop(p.crop),
       rotate: p.rotate || 0,
     }));
+
+  if (mappedImages.length !== pictures.length) {
+    const error = new Error(
+      `BAKECAINCONTRII_IMAGE_COUNT_MISMATCH: ricevute ${pictures.length}, pronte per la modifica ${mappedImages.length}.`
+    );
+    error.code = "BAKECAINCONTRII_IMAGE_COUNT_MISMATCH";
+    error.stage = "images-step";
+    throw error;
+  }
 
   const advBody = {
     csrfmiddlewaretoken,

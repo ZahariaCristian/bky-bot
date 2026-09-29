@@ -1,6 +1,7 @@
 const { default: axios } = require("axios");
 const cheerio = require("cheerio");
 const signale = require("signale");
+const fs = require("fs");
 const { imageProcessor } = require("../imageProcessor");
 
 function toSnippet(value, maxLength = 500) {
@@ -272,34 +273,56 @@ async function extract_images({ picsAudit, adv }) {
   console.log("picsaudit log and adv: ")
   console.log(picsAudit)
   console.log(adv)
-  if (picsAudit) {
-    try {
-      let picsWaiter = [];
-      picsAudit.forEach((pa) => {
-        if (pa.applyPhone) {
-          console.log("pa log: " + pa)
-          console.log("pa.path log: " + pa.path)
-          picsWaiter.push(imageProcessor([pa.path], adv));
-        } else {
-          picsWaiter.push(pa.path);
-        }
-      });
-      picsWaiter = await Promise.all(picsWaiter);
-      return picsWaiter;
-    } catch (e) {
-      console.error(e);
-      return [];
-    }
-  } else {
-    return [];
+  const auditedPictures = Array.isArray(picsAudit) && picsAudit.length
+    ? picsAudit
+    : (Array.isArray(adv?.pics) ? adv.pics.map((path) => ({ path, applyPhone: false })) : []);
+
+  const formattedPictures = await Promise.all(
+    auditedPictures.map(async (picture, index) => {
+      const sourcePath = picture?.path;
+      if (!sourcePath || !fs.existsSync(sourcePath)) {
+        const error = new Error(
+          `BAKECAINCONTRII_IMAGE_FILE_MISSING: immagine ${index + 1} non trovata: ${sourcePath || "<vuota>"}`
+        );
+        error.code = "BAKECAINCONTRII_IMAGE_FILE_MISSING";
+        error.stage = "images-step";
+        throw error;
+      }
+
+      const uploadPath = picture.applyPhone
+        ? await imageProcessor([sourcePath], adv)
+        : sourcePath;
+
+      if (!uploadPath || !fs.existsSync(uploadPath)) {
+        const error = new Error(
+          `BAKECAINCONTRII_IMAGE_PROCESSING_FAILED: immagine ${index + 1} non disponibile dopo l'elaborazione.`
+        );
+        error.code = "BAKECAINCONTRII_IMAGE_PROCESSING_FAILED";
+        error.stage = "images-step";
+        throw error;
+      }
+
+      return uploadPath;
+    })
+  );
+
+  if (formattedPictures.length !== auditedPictures.length) {
+    const error = new Error(
+      `BAKECAINCONTRII_IMAGE_COUNT_MISMATCH: attese ${auditedPictures.length}, preparate ${formattedPictures.length}.`
+    );
+    error.code = "BAKECAINCONTRII_IMAGE_COUNT_MISMATCH";
+    error.stage = "images-step";
+    throw error;
   }
+
+  return formattedPictures;
 }
 
 function formatCrop(crop) {
   if (!crop) {
     return null;
   }
-  const parsedCrop = JSON.parse(crop);
+  const parsedCrop = typeof crop === "string" ? JSON.parse(crop) : crop;
   console.log("safecrop: " + parsedCrop)
   return {
     x: parsedCrop.x,

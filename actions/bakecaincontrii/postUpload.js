@@ -132,13 +132,32 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
   }
   logger.debug("csrftoken obtained successfully!");
 
-  let IMAGE_STORE = [];
-  let formattedPics = await extract_images({ picsAudit, adv }); // Ensure this is immutable
-  const uploadTasks = formattedPics.map((image, i) => {
-    return uploadImage(image, TEMP_CODE, i, jHeader, { ...adv }); // Pass a cloned `adv`
-  });
-  IMAGE_STORE = await Promise.all(uploadTasks); // Ensure independent uploads
-  logger.debug(`Images successfully submitted, starting the POST request`);
+  const IMAGE_STORE = [];
+  const formattedPics = await extract_images({ picsAudit, adv });
+  logger.debug(`Prepared ${formattedPics.length} image(s) for Bakecaincontrii upload`);
+
+  // Bakecaincontrii associates uploads with one temporary code. Send them in
+  // sequence so concurrent requests cannot overwrite the temporary gallery.
+  for (let i = 0; i < formattedPics.length; i += 1) {
+    const uploadedPicture = await uploadImage(
+      formattedPics[i],
+      TEMP_CODE,
+      i,
+      jHeader
+    );
+    IMAGE_STORE.push(uploadedPicture);
+  }
+
+  if (IMAGE_STORE.length !== formattedPics.length) {
+    throw createWorkflowError(
+      "BAKECAINCONTRII_IMAGE_UPLOAD_INCOMPLETE",
+      "images-step",
+      `Bakecaincontrii ha accettato ${IMAGE_STORE.length} immagini su ${formattedPics.length}.`,
+      { requested: formattedPics.length, uploaded: IMAGE_STORE.length }
+    );
+  }
+
+  logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
   const REQ_RESPONSE = await fetchWithRetry({
     url: `${BASE_URL}/u/post-insert-images/${TEMP_CODE}/`,
     method: "POST",
@@ -150,11 +169,12 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
       picsAudit
     ),
   });
-  unlinkImages(
-    formattedPics.filter((fp) =>
-      fp.includes("/home/bky_bot/images/")
-    )
+  const sourcePaths = new Set(
+    (Array.isArray(picsAudit) ? picsAudit : [])
+      .map((picture) => picture?.path)
+      .filter(Boolean)
   );
+  unlinkImages(formattedPics.filter((filePath) => !sourcePaths.has(filePath)));
   if (!REQ_RESPONSE) {
     logger.error("Error during the POST request");
     return undefined;
@@ -285,8 +305,16 @@ const thirdStep = async (adv, url, jHeader) => {
   }
 };
 
-const uploadImage = async (image, temporaryCode, i, jHeader, adv) => {
+const uploadImage = async (image, temporaryCode, i, jHeader) => {
   logger.debug(`Starting image ${i} upload`);
+  if (!image || !fs.existsSync(image)) {
+    throw createWorkflowError(
+      "BAKECAINCONTRII_IMAGE_FILE_MISSING",
+      "images-step",
+      `Il file immagine ${i + 1} non esiste: ${image || "<vuoto>"}.`
+    );
+  }
+
   const formData = new FormData();
   const filename = image.replace(/\/$/, "").split("/").pop();
   formData.append("pictureFiles", fs.createReadStream(image), { filename });
@@ -312,19 +340,34 @@ const uploadImage = async (image, temporaryCode, i, jHeader, adv) => {
     body: formData,
     method: "POST",
     useAxios: true,
-  }).catch((err) => {
-    logger.error(`Error uploading image ${i}:`, err);
-    //advImageError(adv, i, err);
-    return undefined;
   });
 
-  if (IMG_RESPONSE) {
-    logger.debug(`Upload for image ${i} completed`);
-    return IMG_RESPONSE.pictures[0];
-  } else {
-    logger.error(`Upload for image ${i} failed`);
-    return;
+  const responsePictures = Array.isArray(IMG_RESPONSE?.pictures)
+    ? IMG_RESPONSE.pictures
+    : [];
+  const picture = responsePictures[0] || IMG_RESPONSE?.picture ||
+    (IMG_RESPONSE?.uuid ? IMG_RESPONSE : null);
+  const source = picture?.url || picture?.src;
+
+  if (!picture?.uuid || !source) {
+    throw createWorkflowError(
+      "BAKECAINCONTRII_IMAGE_RESPONSE_INVALID",
+      "images-step",
+      `Bakecaincontrii non ha restituito i dati completi per l'immagine ${i + 1}.`,
+      {
+        imageIndex: i,
+        responseKeys: IMG_RESPONSE && typeof IMG_RESPONSE === "object"
+          ? Object.keys(IMG_RESPONSE)
+          : []
+      }
+    );
   }
+
+  const normalizedPicture = { ...picture, url: source, src: source };
+  logger.debug(
+    `Upload for image ${i} completed (uuid=${normalizedPicture.uuid})`
+  );
+  return normalizedPicture;
 };
 
 module.exports = uploadAdv;

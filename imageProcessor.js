@@ -1,6 +1,10 @@
 const sharp = require("sharp");
 const uuid = require("uuid");
 const fs = require("fs");
+const nodePath = require("path");
+
+const getImagesPath = () =>
+  nodePath.resolve(process.env.IMAGE_PATH || nodePath.join(__dirname, "images"));
 
 const addText = async (img, phone) => {
   const imageLoaded = sharp(img);
@@ -34,68 +38,53 @@ const addText = async (img, phone) => {
   `;
 
   const imageName = `${uuid.v4()}.${img.split(".").pop()}`;
+  const outputPath = nodePath.join(getImagesPath(), imageName);
 
-  return new Promise(async (resolve, reject) => {
-    try {
-      await sharp(img)
-        .composite([
-          {
-            input: Buffer.from(text),
-            top: 0,
-            left: 0,
-          },
-        ])
-        .toFile(`${process.env.IMAGE_PATH}/${imageName}`); //TODO: random uuid
-      resolve(imageName);
-    } catch (err) {
-      console.log(err);
-    }
-  });
+  await sharp(img)
+    .composite([
+      {
+        input: Buffer.from(text),
+        top: 0,
+        left: 0,
+      },
+    ])
+    .toFile(outputPath);
+
+  return outputPath;
 };
 
 const initImageProcess = async (img, phone) => {
   return await addText(img, phone);
 };
 
-const path = "/home/bky-bot/images/";
-
 const imageProcessor = async (imagesArr, adv) => {
   console.log("Received images array:", imagesArr);
   console.log("Received advertisement object:", adv);
 
+  const imagesPath = getImagesPath();
+
   // Check if the images directory exists, create it if not
-  if (!fs.existsSync(path)) {
-    console.log(`Directory ${path} does not exist. Creating...`);
-    fs.mkdirSync(path, { recursive: true });
+  if (!fs.existsSync(imagesPath)) {
+    console.log(`Directory ${imagesPath} does not exist. Creating...`);
+    fs.mkdirSync(imagesPath, { recursive: true });
   }
 
-  var imagesWaiter = [];
-  return new Promise(async (resolve, reject) => {
-    imagesArr.map((cc, index) => {
-      console.log(`Processing image ${index}: ${cc}`);
-      imagesWaiter.push(initImageProcess(cc, adv.phone));
-    });
+  const images = await Promise.all(
+    imagesArr.map(async (image, index) => {
+      console.log(`Processing image ${index}: ${image}`);
+      const processedPath = await initImageProcess(image, adv.phone);
+      console.log("Processed image path:", processedPath);
+      return processedPath;
+    })
+  );
 
-    try {
-      await Promise.all(imagesWaiter).then((images) => {
-        images = images.map((img) => {
-          console.log("Processed image path:", img);
-          return `${path}${img}`;
-        });
+  if (images.length > 1) {
+    console.log("Multiple images processed successfully:", images);
+    return images;
+  }
 
-        if (images.length > 1) {
-          console.log("Multiple images processed successfully:", images);
-          resolve(images);
-        } else {
-          console.log("Single image processed successfully:", images[0]);
-          resolve(images[0]);
-        }
-      });
-    } catch (err) {
-      console.error("Error processing images:", err);
-      reject(err);
-    }
-  });
+  console.log("Single image processed successfully:", images[0]);
+  return images[0];
 };
 
 const unlinkImages = async (imagesArr) => {
