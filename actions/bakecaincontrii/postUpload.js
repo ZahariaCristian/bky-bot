@@ -40,34 +40,52 @@ const uploadAdv = async (adv, jHeader) => {
   const clonedHeader = { ...jHeader }; // Shallow clone if `jHeader` is flat
   console.log("Starting upload of", clonedAdv);
 
-  return new Promise(async (resolve, reject) => {
-    try {
-      logger.debug("Starting adv upload");
-      const firstResponse = await firstStep(clonedAdv, clonedHeader);
-      if (firstResponse) {
-        const secondResponse = await secondStep(
-          clonedAdv.picsAudit,
-          firstResponse,
-          clonedHeader,
-          clonedAdv
-        );
-        if (secondResponse) {
-          const thirdResponse = await thirdStep(
-            clonedAdv,
-            secondResponse,
-            clonedHeader
-          );
-          if (thirdResponse) {
-            resolve(thirdResponse);
-          }
-        }
-      }
-      reject("ERROR");
-    } catch (e) {
-      logger.error(e);
-      reject(e);
+  try {
+    logger.debug("Starting adv upload");
+    const firstResponse = await firstStep(clonedAdv, clonedHeader);
+    if (!firstResponse) {
+      throw createWorkflowError(
+        "BAKECAINCONTRII_FIRST_STEP_FAILED",
+        "first-step",
+        "Bakecaincontrii ha rifiutato i dati iniziali dell'annuncio."
+      );
     }
-  });
+
+    const secondResponse = await secondStep(
+      clonedAdv.picsAudit,
+      firstResponse,
+      clonedHeader,
+      clonedAdv
+    );
+    if (!secondResponse) {
+      throw createWorkflowError(
+        "BAKECAINCONTRII_IMAGES_STEP_FAILED",
+        "images-step",
+        "Bakecaincontrii non ha confermato il caricamento delle immagini."
+      );
+    }
+
+    const thirdResponse = await thirdStep(clonedAdv, secondResponse, clonedHeader);
+    if (!thirdResponse?.uri) {
+      throw createWorkflowError(
+        "BAKECAINCONTRII_PROMOTION_STEP_FAILED",
+        "promotion-step",
+        "Bakecaincontrii non ha restituito la pagina di pubblicazione o promozione."
+      );
+    }
+    return thirdResponse;
+  } catch (error) {
+    logger.error(error);
+    throw error;
+  }
+};
+
+const createWorkflowError = (code, stage, message, details = {}) => {
+  const error = new Error(message);
+  error.code = code;
+  error.stage = stage;
+  error.details = details;
+  return error;
 };
 
 const firstStep = async (adv, jHeader) => {
@@ -178,6 +196,17 @@ const thirdStep = async (adv, url, jHeader) => {
 
     console.log("Using code for requests:", useCode);
     console.log("reqUrl:", reqUrl);
+
+    const requestedProduct = `${adv.promo.product || adv.promo.visibility || ""}`.trim().toLowerCase();
+    if (adv.promo.active && requestedProduct === "flash") {
+      logger.debug("Flash selected; handing the live promotion page to the browser workflow");
+      return {
+        uri: reqUrl,
+        promo: true,
+        promotionType: "flash",
+        remotePostId: "",
+      };
+    }
 
     const requestBody = thirdStepBody(
       adv.promo,

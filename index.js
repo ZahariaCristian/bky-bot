@@ -36,11 +36,19 @@ app.post("/", async (req, res) => {
     }
   }
 
-  res.send(
-    await uploadAdv(adv, cookies)
-      .then((data) => data)
-      .catch((e) => e)
-  );
+  try {
+    return res.json(await uploadAdv(adv, cookies));
+  } catch (error) {
+    const payload = {
+      ok: false,
+      code: error?.code || "BAKECAINCONTRII_UPLOAD_FAILED",
+      stage: error?.stage || "unknown",
+      message: error?.message || `${error || "Errore sconosciuto"}`,
+      details: error?.details || {},
+    };
+    console.error("Bakecaincontrii upload failed", payload);
+    return res.status(502).json(payload);
+  }
 });
 
 app.post("/edit-adv", async (req, res) => {

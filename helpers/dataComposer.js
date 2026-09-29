@@ -1,8 +1,16 @@
 const categories = require("../constants/categories");
-const cities = require("../constants/cities");
 const promo = require("../constants/promo");
 const tags = require("../constants/tags");
 const { extractEmail, formatCrop } = require("./common");
+const { resolveBakecaincontriiCity } = require("./bakecaincontriiLocation");
+
+const payloadError = (code, message, details = {}) => {
+  const error = new Error(message);
+  error.code = code;
+  error.stage = "first-step-payload";
+  error.details = details;
+  return error;
+};
 
 //ADV INSERT
 const tagParser = (adv) => {
@@ -70,10 +78,28 @@ const tagParser = (adv) => {
 };
 
 const firstStepBody = (adv, csrfmiddlewaretoken, email) => {
+  const categoryId = categories[adv.categorie];
+  if (!categoryId) {
+    throw payloadError(
+      "BAKECAINCONTRII_CATEGORY_NOT_MAPPED",
+      `Categoria Bakecaincontrii non riconosciuta: ${adv.categorie || "<vuota>"}.`,
+      { category: adv.categorie || "" }
+    );
+  }
+
+  const resolvedCity = resolveBakecaincontriiCity(adv.city);
+  if (!resolvedCity.id) {
+    throw payloadError(
+      "BAKECAINCONTRII_CITY_NOT_MAPPED",
+      `Città Bakecaincontrii non riconosciuta: ${adv.city || "<vuota>"}.`,
+      { city: adv.city || "" }
+    );
+  }
+
   const advBody = {
     csrfmiddlewaretoken,
-    category: categories[adv.categorie],
-    city: cities[adv.city],
+    category: categoryId,
+    city: resolvedCity.id,
     address: adv.location,
     postal_code: "",
     nickname: adv.nickname ? adv.nickname : "Anonimo",
@@ -89,8 +115,8 @@ const firstStepBody = (adv, csrfmiddlewaretoken, email) => {
     )} ${adv.phone.slice(6, 10)}`,
     telephone_national: adv.phone,
     telephone_international: `+39${adv.phone}`,
-    telephone_international_prefix: `+39${adv.phone}`,
-    telephone_details: { contact: `+39${adv.phone}` },
+    telephone_international_prefix: "+39",
+    telephone_details: JSON.stringify({ contact: `+39${adv.phone}` }),
     whatsapp: adv.whatsapp ? "1" : "0",
     telegram: adv.telegram ? "1" : "0",
     terms: "on",
@@ -160,6 +186,7 @@ const thirdStepBody = (
   temporary_code,
   private_code
 ) => {
+  const productType = `${advpromo.product || advpromo.visibility || "top"}`.trim().toLowerCase();
   //Getting promo option value
   let ctt_product_id = "";
   if (advpromo.active) {
@@ -168,9 +195,9 @@ const thirdStepBody = (
       optionKey += "-cam";
     }
     if (advpromo.schedule && advpromo.schedule !== "") {
-      ctt_product_id = promo[optionKey][advpromo.schedule];
+      ctt_product_id = promo[optionKey]?.[advpromo.schedule] || "";
     } else {
-      ctt_product_id = promo[optionKey];
+      ctt_product_id = promo[optionKey] || promo[optionKey.toLowerCase()] || "";
     }
   }
 
@@ -199,7 +226,7 @@ const thirdStepBody = (
     supertop_selected: advpromo.premium ? 1 : 0,
     use_coupon_addons: true,
     add_ons: validAddons.join(","),
-    product_type: 'top',
+    product_type: productType === "flash" ? "flash" : "top",
   };
 
   var form_data = new FormData();
@@ -429,6 +456,7 @@ const editPostHeader = (cookie, baseURL, private_code) => ({
 
 module.exports = {
   firstStepBody,
+  resolveBakecaincontriiCity,
   pageGetHeader,
   firstPostHeader,
   secondPostHeader,

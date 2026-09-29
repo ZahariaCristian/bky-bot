@@ -96,7 +96,12 @@ async function fetchWithRetry({
           json: parseJsonIfPossible(responseText),
           body: toSnippet(responseText),
         };
-        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+        const responseError = new Error(`HTTP ${response.status} ${response.statusText}`);
+        if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) {
+          lastError = responseError;
+          break;
+        }
+        throw responseError;
       } else {
         const response = await axios({
           url,
@@ -128,9 +133,14 @@ async function fetchWithRetry({
               : parseJsonIfPossible(response?.data),
           body: toSnippet(response?.data),
         };
-        throw new Error(
+        const responseError = new Error(
           `HTTP ${response?.status || "unknown"} ${response?.statusText || ""}`.trim()
         );
+        if (response?.status >= 400 && response?.status < 500 && ![408, 429].includes(response.status)) {
+          lastError = responseError;
+          break;
+        }
+        throw responseError;
       }
     } catch (error) {
       lastError = error;
