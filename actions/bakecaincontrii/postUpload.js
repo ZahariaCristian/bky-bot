@@ -16,6 +16,7 @@ const {
 var fs = require("fs");
 const FormData = require("form-data");
 const { Signale } = require("signale");
+const { default: axios } = require("axios");
 const { unlinkImages } = require("../../imageProcessor");
 const options = {
   types: {
@@ -26,6 +27,17 @@ const options = {
 };
 const logger = new Signale(options);
 const BASE_URL = "https://bari.bakecaincontrii.com";
+const IMAGE_UPLOAD_MAX_ATTEMPTS = 3;
+const rawImageUploadDelay = Number.parseInt(
+  process.env.BAKECAINCONTRII_IMAGE_UPLOAD_DELAY_MS || "750",
+  10
+);
+const IMAGE_UPLOAD_DELAY_MS = Number.isFinite(rawImageUploadDelay)
+  ? Math.min(Math.max(rawImageUploadDelay, 0), 5000)
+  : 750;
+
+const delay = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const getCookie = (jHeader) => {
   var cookie = "";
@@ -171,6 +183,144 @@ const summarizeImageResponse = (response, candidates) => ({
   message: `${response?.message || response?.error || response?.detail || ""}`.slice(0, 500),
 });
 
+const responseBodySnippet = (value, maxLength = 1000) => {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value.slice(0, maxLength);
+  try {
+    return JSON.stringify(value).slice(0, maxLength);
+  } catch (error) {
+    return `${value}`.slice(0, maxLength);
+  }
+};
+
+const createImageUploadForm = (image, temporaryCode) => {
+  const formData = new FormData();
+  const filename = image.replace(/\/$/, "").split("/").pop();
+  formData.append("pictureFiles", fs.createReadStream(image), { filename });
+  formData.append("privateCode", "");
+  formData.append("temporaryCode", temporaryCode);
+  return formData;
+};
+
+const requestImageUpload = async (image, temporaryCode, i, jHeader) => {
+  let lastFailure = null;
+
+  for (let attempt = 1; attempt <= IMAGE_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    // FormData contains a one-shot file stream, so it must be rebuilt for every
+    // retry. Reusing it causes later attempts to send an empty image body.
+    const formData = createImageUploadForm(image, temporaryCode);
+    try {
+      const response = await axios({
+        url: `${BASE_URL}/u/upload-image/`,
+        headers: {
+          authority: "bari.bakecaincontrii.com",
+          accept: "application/json, text/plain, */*",
+          "accept-language": "it",
+          "cache-control": "no-cache",
+          cookie: getCookie(jHeader),
+          origin: BASE_URL,
+          pragma: "no-cache",
+          referer: `${BASE_URL}/u/post-insert-images/${temporaryCode}/`,
+          "upgrade-insecure-requests": "1",
+          "x-csrftoken": jHeader.csrftoken,
+          "x-requested-with": "XMLHttpRequest",
+          ...formData.getHeaders(),
+        },
+        data: formData,
+        method: "POST",
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: 60000,
+        validateStatus: () => true,
+      });
+
+      const responseUrl = response?.request?.res?.responseUrl || "";
+      const status = Number(response?.status || 0);
+      const candidates = collectPictureCandidates(response?.data);
+
+      // Some duplicate-image responses use a non-2xx status but still return
+      // reusable picture metadata. Preserve that valid server-provided object.
+      if (candidates.length > 0) {
+        if (status < 200 || status >= 300) {
+          logger.warn(
+            `Image ${i} returned HTTP ${status} with reusable picture metadata`
+          );
+        }
+        return response.data;
+      }
+
+      if (responseUrl.includes("/u/login")) {
+        throw createWorkflowError(
+          "BAKECAINCONTRII_IMAGE_SESSION_EXPIRED",
+          "images-step",
+          `Sessione Bakecaincontrii scaduta durante il caricamento dell'immagine ${i + 1}.`,
+          { imageIndex: i, status, responseUrl }
+        );
+      }
+
+      if (status >= 200 && status < 300) {
+        throw createWorkflowError(
+          "BAKECAINCONTRII_IMAGE_RESPONSE_INVALID",
+          "images-step",
+          `Bakecaincontrii ha risposto senza dati immagine utilizzabili per il file ${i + 1}.`,
+          {
+            imageIndex: i,
+            attempt,
+            status,
+            responseUrl,
+            responseBody: responseBodySnippet(response?.data),
+          }
+        );
+      }
+
+      lastFailure = {
+        imageIndex: i,
+        attempt,
+        status,
+        statusText: response?.statusText || "",
+        responseUrl,
+        responseBody: responseBodySnippet(response?.data),
+      };
+
+      const retryable = [408, 425, 429].includes(status) || status >= 500;
+      if (!retryable) {
+        throw createWorkflowError(
+          "BAKECAINCONTRII_IMAGE_UPLOAD_REJECTED",
+          "images-step",
+          `Bakecaincontrii ha rifiutato l'immagine ${i + 1} con HTTP ${status || "sconosciuto"}.`,
+          lastFailure
+        );
+      }
+    } catch (error) {
+      if (error?.code?.startsWith("BAKECAINCONTRII_")) throw error;
+      lastFailure = {
+        imageIndex: i,
+        attempt,
+        status: error?.response?.status || 0,
+        statusText: error?.response?.statusText || "",
+        responseUrl: error?.response?.request?.res?.responseUrl || "",
+        responseBody: responseBodySnippet(error?.response?.data),
+        networkError: error?.message || `${error}`,
+      };
+    }
+
+    if (attempt < IMAGE_UPLOAD_MAX_ATTEMPTS) {
+      const retryDelay = IMAGE_UPLOAD_DELAY_MS * attempt;
+      logger.warn(
+        `Image ${i} upload attempt ${attempt} failed; retrying in ${retryDelay} ms`
+      );
+      await delay(retryDelay);
+    }
+  }
+
+  throw createWorkflowError(
+    "BAKECAINCONTRII_IMAGE_UPLOAD_REQUEST_FAILED",
+    "images-step",
+    `Caricamento dell'immagine ${i + 1} fallito dopo ${IMAGE_UPLOAD_MAX_ATTEMPTS} tentativi.`,
+    lastFailure || { imageIndex: i }
+  );
+};
+
 const firstStep = async (adv, jHeader) => {
   logger.debug("Initialized first-step on Bakeca (adv data)");
   //Getting firstStep csrf for post request
@@ -231,6 +381,9 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
       usedPictureUuids
     );
     IMAGE_STORE.push(uploadedPicture);
+    if (i < formattedPics.length - 1 && IMAGE_UPLOAD_DELAY_MS > 0) {
+      await delay(IMAGE_UPLOAD_DELAY_MS);
+    }
   }
 
   if (IMAGE_STORE.length !== formattedPics.length) {
@@ -400,32 +553,7 @@ const uploadImage = async (image, temporaryCode, i, jHeader, usedPictureUuids = 
     );
   }
 
-  const formData = new FormData();
-  const filename = image.replace(/\/$/, "").split("/").pop();
-  formData.append("pictureFiles", fs.createReadStream(image), { filename });
-  formData.append("privateCode", "");
-  formData.append("temporaryCode", temporaryCode);
-
-  const IMG_RESPONSE = await fetchWithRetry({
-    url: `${BASE_URL}/u/upload-image/`,
-    headers: {
-      authority: "bari.bakecaincontrii.com",
-      accept: "application/json, text/plain, */*",
-      "accept-language": "it",
-      "cache-control": "no-cache",
-      cookie: getCookie(jHeader),
-      origin: BASE_URL,
-      pragma: "no-cache",
-      referer: `${BASE_URL}/u/post-insert-images/${temporaryCode}/`,
-      "upgrade-insecure-requests": "1",
-      "x-csrftoken": jHeader.csrftoken,
-      "x-requested-with": "XMLHttpRequest",
-      ...formData.getHeaders(),
-    },
-    body: formData,
-    method: "POST",
-    useAxios: true,
-  });
+  const IMG_RESPONSE = await requestImageUpload(image, temporaryCode, i, jHeader);
 
   const candidates = collectPictureCandidates(IMG_RESPONSE);
   const picture = candidates.find((candidate) => !usedPictureUuids.has(candidate.uuid));
