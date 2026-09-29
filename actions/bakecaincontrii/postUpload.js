@@ -88,6 +88,89 @@ const createWorkflowError = (code, stage, message, details = {}) => {
   return error;
 };
 
+const normalizePictureSource = (source) => {
+  if (!source || typeof source !== "string") return "";
+  try {
+    return new URL(source, BASE_URL).href;
+  } catch (error) {
+    return source;
+  }
+};
+
+const normalizePictureCandidate = (candidate) => {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
+  }
+
+  const uuid = candidate.uuid || candidate.pictureUuid || candidate.picture_uuid;
+  const source = normalizePictureSource(
+    candidate.url || candidate.src || candidate.imageUrl || candidate.image_url
+  );
+  if (!uuid || !source) return null;
+
+  return {
+    ...candidate,
+    uuid,
+    url: source,
+    src: source,
+  };
+};
+
+const collectPictureCandidates = (response) => {
+  const candidates = [];
+  const seen = new Set();
+  const addContainer = (container, depth = 0) => {
+    if (!container || depth > 2) return;
+    if (Array.isArray(container)) {
+      container.forEach((entry) => addContainer(entry, depth + 1));
+      return;
+    }
+    if (typeof container !== "object") return;
+
+    const normalized = normalizePictureCandidate(container);
+    if (normalized) {
+      const key = `${normalized.uuid}|${normalized.src}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        candidates.push(normalized);
+      }
+      return;
+    }
+
+    Object.values(container).forEach((entry) => {
+      if (entry && typeof entry === "object") addContainer(entry, depth + 1);
+    });
+  };
+
+  const containers = [
+    response?.pictures,
+    response?.picture,
+    response?.uploadedPictures,
+    response?.uploadedPicture,
+    response?.duplicates,
+    response?.duplicate,
+    response?.duplicatePictures,
+    response?.existingPictures,
+    response?.existingPicture,
+    response?.data?.pictures,
+    response?.data?.picture,
+    response?.data?.uploadedPictures,
+    response?.data?.duplicates,
+    response?.data?.existingPictures,
+    response,
+  ];
+  containers.forEach((container) => addContainer(container));
+  return candidates;
+};
+
+const summarizeImageResponse = (response, candidates) => ({
+  responseKeys: response && typeof response === "object" ? Object.keys(response) : [],
+  candidateCount: candidates.length,
+  candidateUuids: candidates.map((picture) => picture.uuid),
+  status: response?.status || response?.result || "",
+  message: `${response?.message || response?.error || response?.detail || ""}`.slice(0, 500),
+});
+
 const firstStep = async (adv, jHeader) => {
   logger.debug("Initialized first-step on Bakeca (adv data)");
   //Getting firstStep csrf for post request
@@ -139,11 +222,13 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
   // Bakecaincontrii associates uploads with one temporary code. Send them in
   // sequence so concurrent requests cannot overwrite the temporary gallery.
   for (let i = 0; i < formattedPics.length; i += 1) {
+    const usedPictureUuids = new Set(IMAGE_STORE.map((picture) => picture.uuid));
     const uploadedPicture = await uploadImage(
       formattedPics[i],
       TEMP_CODE,
       i,
-      jHeader
+      jHeader,
+      usedPictureUuids
     );
     IMAGE_STORE.push(uploadedPicture);
   }
@@ -305,7 +390,7 @@ const thirdStep = async (adv, url, jHeader) => {
   }
 };
 
-const uploadImage = async (image, temporaryCode, i, jHeader) => {
+const uploadImage = async (image, temporaryCode, i, jHeader, usedPictureUuids = new Set()) => {
   logger.debug(`Starting image ${i} upload`);
   if (!image || !fs.existsSync(image)) {
     throw createWorkflowError(
@@ -342,32 +427,22 @@ const uploadImage = async (image, temporaryCode, i, jHeader) => {
     useAxios: true,
   });
 
-  const responsePictures = Array.isArray(IMG_RESPONSE?.pictures)
-    ? IMG_RESPONSE.pictures
-    : [];
-  const picture = responsePictures[0] || IMG_RESPONSE?.picture ||
-    (IMG_RESPONSE?.uuid ? IMG_RESPONSE : null);
-  const source = picture?.url || picture?.src;
+  const candidates = collectPictureCandidates(IMG_RESPONSE);
+  const picture = candidates.find((candidate) => !usedPictureUuids.has(candidate.uuid));
 
-  if (!picture?.uuid || !source) {
+  if (!picture) {
     throw createWorkflowError(
       "BAKECAINCONTRII_IMAGE_RESPONSE_INVALID",
       "images-step",
-      `Bakecaincontrii non ha restituito i dati completi per l'immagine ${i + 1}.`,
-      {
-        imageIndex: i,
-        responseKeys: IMG_RESPONSE && typeof IMG_RESPONSE === "object"
-          ? Object.keys(IMG_RESPONSE)
-          : []
-      }
+      `Bakecaincontrii non ha restituito un'immagine utilizzabile e distinta per il file ${i + 1}.`,
+      { imageIndex: i, ...summarizeImageResponse(IMG_RESPONSE, candidates) }
     );
   }
 
-  const normalizedPicture = { ...picture, url: source, src: source };
   logger.debug(
-    `Upload for image ${i} completed (uuid=${normalizedPicture.uuid})`
+    `Upload for image ${i} completed (uuid=${picture.uuid}, candidates=${candidates.length})`
   );
-  return normalizedPicture;
+  return picture;
 };
 
 module.exports = uploadAdv;
