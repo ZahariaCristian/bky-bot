@@ -2,7 +2,7 @@ const { default: axios } = require("axios");
 const cheerio = require("cheerio");
 const signale = require("signale");
 const fs = require("fs");
-const { imageProcessor } = require("../imageProcessor");
+const { imageProcessor, prepareUploadImage } = require("../imageProcessor");
 
 function toSnippet(value, maxLength = 500) {
   if (value === undefined || value === null) {
@@ -269,7 +269,7 @@ function extractEmail(text) {
   return null; // Return null if no email is found
 }
 
-async function extract_images({ picsAudit, adv }) {
+async function extract_images({ picsAudit, adv, normalizeForBakecaincontrii = false }) {
   console.log("picsaudit log and adv: ")
   console.log(picsAudit)
   console.log(adv)
@@ -289,11 +289,11 @@ async function extract_images({ picsAudit, adv }) {
         throw error;
       }
 
-      const uploadPath = picture.applyPhone
+      const processedPath = picture.applyPhone
         ? await imageProcessor([sourcePath], adv)
         : sourcePath;
 
-      if (!uploadPath || !fs.existsSync(uploadPath)) {
+      if (!processedPath || !fs.existsSync(processedPath)) {
         const error = new Error(
           `BAKECAINCONTRII_IMAGE_PROCESSING_FAILED: immagine ${index + 1} non disponibile dopo l'elaborazione.`
         );
@@ -302,7 +302,26 @@ async function extract_images({ picsAudit, adv }) {
         throw error;
       }
 
-      return uploadPath;
+      if (!normalizeForBakecaincontrii) {
+        return processedPath;
+      }
+
+      try {
+        return await prepareUploadImage(processedPath);
+      } catch (cause) {
+        const error = new Error(
+          `BAKECAINCONTRII_IMAGE_CONTENT_INVALID: immagine ${index + 1} non convertibile in JPEG: ${cause.message}`
+        );
+        error.code = "BAKECAINCONTRII_IMAGE_CONTENT_INVALID";
+        error.stage = "images-step";
+        error.details = {
+          imageIndex: index,
+          sourcePath,
+          processedPath,
+        };
+        error.cause = cause;
+        throw error;
+      }
     })
   );
 

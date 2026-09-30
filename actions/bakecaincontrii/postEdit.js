@@ -68,7 +68,11 @@ const firstStep = async (adv, jHeader, remotePostId) => {
     logger.debug("Grabbed all useful values and sending POST request");
 
     let IMAGE_STORE = [];
-    let formattedPics = await extract_images({ picsAudit: adv.picsAudit, adv });
+    let formattedPics = await extract_images({
+      picsAudit: adv.picsAudit,
+      adv,
+      normalizeForBakecaincontrii: true,
+    });
     formattedPics.forEach((image, i) => {
       IMAGE_STORE.push(uploadImage(image, remotePostId, i, jHeader, adv));
     });

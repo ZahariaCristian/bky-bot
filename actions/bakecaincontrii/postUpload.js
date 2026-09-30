@@ -14,10 +14,11 @@ const {
   extract_images,
 } = require("../../helpers/common");
 var fs = require("fs");
+const path = require("path");
 const FormData = require("form-data");
 const { Signale } = require("signale");
 const { default: axios } = require("axios");
-const { unlinkImages } = require("../../imageProcessor");
+const { prepareUploadImage, unlinkImages } = require("../../imageProcessor");
 const options = {
   types: {
     debug: {
@@ -77,7 +78,7 @@ const uploadAdv = async (adv, jHeader) => {
       );
     }
 
-    const thirdResponse = await thirdStep(clonedAdv, secondResponse, clonedHeader);
+    const thirdResponse = await thirdStep(clonedAdv, secondResponse.url, clonedHeader);
     if (!thirdResponse?.uri) {
       throw createWorkflowError(
         "BAKECAINCONTRII_PROMOTION_STEP_FAILED",
@@ -85,7 +86,10 @@ const uploadAdv = async (adv, jHeader) => {
         "Bakecaincontrii non ha restituito la pagina di pubblicazione o promozione."
       );
     }
-    return thirdResponse;
+    return {
+      ...thirdResponse,
+      imageWarnings: secondResponse.imageWarnings || [],
+    };
   } catch (error) {
     logger.error(error);
     throw error;
@@ -98,6 +102,19 @@ const createWorkflowError = (code, stage, message, details = {}) => {
   error.stage = stage;
   error.details = details;
   return error;
+};
+
+const isInvalidImageContentError = (error) => {
+  if (error?.code !== "BAKECAINCONTRII_IMAGE_UPLOAD_REJECTED") return false;
+  const responseBody = error?.details?.responseBody;
+  try {
+    const parsed = typeof responseBody === "string"
+      ? JSON.parse(responseBody)
+      : responseBody;
+    return `${parsed?.error_code || ""}` === "2";
+  } catch (parseError) {
+    return /image with invalid content/i.test(`${responseBody || ""}`);
+  }
 };
 
 const normalizePictureSource = (source) => {
@@ -195,8 +212,12 @@ const responseBodySnippet = (value, maxLength = 1000) => {
 
 const createImageUploadForm = (image, temporaryCode) => {
   const formData = new FormData();
-  const filename = image.replace(/\/$/, "").split("/").pop();
-  formData.append("pictureFiles", fs.createReadStream(image), { filename });
+  const filename = path.basename(image);
+  formData.append("pictureFiles", fs.createReadStream(image), {
+    filename,
+    contentType: "image/jpeg",
+    knownLength: fs.statSync(image).size,
+  });
   formData.append("privateCode", "");
   formData.append("temporaryCode", temporaryCode);
   return formData;
@@ -366,36 +387,65 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
   logger.debug("csrftoken obtained successfully!");
 
   const IMAGE_STORE = [];
-  const formattedPics = await extract_images({ picsAudit, adv });
+  const formattedPics = await extract_images({
+    picsAudit,
+    adv,
+    normalizeForBakecaincontrii: true,
+  });
   logger.debug(`Prepared ${formattedPics.length} image(s) for Bakecaincontrii upload`);
+  const acceptedPicsAudit = [];
+  const imageWarnings = [];
+  const extraTemporaryImages = [];
 
   // Bakecaincontrii associates uploads with one temporary code. Send them in
   // sequence so concurrent requests cannot overwrite the temporary gallery.
   for (let i = 0; i < formattedPics.length; i += 1) {
     const usedPictureUuids = new Set(IMAGE_STORE.map((picture) => picture.uuid));
-    const uploadedPicture = await uploadImage(
+    const uploadResult = await uploadImage(
       formattedPics[i],
       TEMP_CODE,
       i,
       jHeader,
-      usedPictureUuids
+      usedPictureUuids,
+      picsAudit?.[i]?.path
     );
-    IMAGE_STORE.push(uploadedPicture);
+    if (uploadResult.temporaryImage) {
+      extraTemporaryImages.push(uploadResult.temporaryImage);
+    }
+    if (uploadResult.picture) {
+      IMAGE_STORE.push(uploadResult.picture);
+      acceptedPicsAudit.push(picsAudit?.[i] || {});
+    }
+    if (uploadResult.warning) {
+      imageWarnings.push(uploadResult.warning);
+    }
     if (i < formattedPics.length - 1 && IMAGE_UPLOAD_DELAY_MS > 0) {
       await delay(IMAGE_UPLOAD_DELAY_MS);
     }
   }
 
-  if (IMAGE_STORE.length !== formattedPics.length) {
+  if (IMAGE_STORE.length === 0) {
     throw createWorkflowError(
       "BAKECAINCONTRII_IMAGE_UPLOAD_INCOMPLETE",
       "images-step",
-      `Bakecaincontrii ha accettato ${IMAGE_STORE.length} immagini su ${formattedPics.length}.`,
-      { requested: formattedPics.length, uploaded: IMAGE_STORE.length }
+      "Bakecaincontrii ha rifiutato tutte le immagini selezionate.",
+      {
+        requested: formattedPics.length,
+        uploaded: 0,
+        imageWarnings,
+      }
     );
   }
 
-  logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
+  if (imageWarnings.length) {
+    logger.warn(
+      `Skipping ${imageWarnings.length} image(s) rejected by Bakecaincontrii; ` +
+      `saving ${IMAGE_STORE.length} valid image(s).`
+    );
+    console.warn("[bakecaincontrii:images] Rejected images", imageWarnings);
+  } else {
+    logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
+  }
   const REQ_RESPONSE = await fetchWithRetry({
     url: `${BASE_URL}/u/post-insert-images/${TEMP_CODE}/`,
     method: "POST",
@@ -404,7 +454,7 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
       IMAGE_STORE,
       csrfmiddlewaretoken,
       TEMP_CODE,
-      picsAudit
+      acceptedPicsAudit
     ),
   });
   const sourcePaths = new Set(
@@ -412,13 +462,19 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
       .map((picture) => picture?.path)
       .filter(Boolean)
   );
-  unlinkImages(formattedPics.filter((filePath) => !sourcePaths.has(filePath)));
+  unlinkImages([
+    ...formattedPics.filter((filePath) => !sourcePaths.has(filePath)),
+    ...extraTemporaryImages,
+  ]);
   if (!REQ_RESPONSE) {
     logger.error("Error during the POST request");
     return undefined;
   }
   logger.success("Completed second-step successfully");
-  return REQ_RESPONSE.url;
+  return {
+    url: REQ_RESPONSE.url,
+    imageWarnings,
+  };
 };
 
 const thirdStep = async (adv, url, jHeader) => {
@@ -543,7 +599,14 @@ const thirdStep = async (adv, url, jHeader) => {
   }
 };
 
-const uploadImage = async (image, temporaryCode, i, jHeader, usedPictureUuids = new Set()) => {
+const uploadImage = async (
+  image,
+  temporaryCode,
+  i,
+  jHeader,
+  usedPictureUuids = new Set(),
+  sourcePath = ""
+) => {
   logger.debug(`Starting image ${i} upload`);
   if (!image || !fs.existsSync(image)) {
     throw createWorkflowError(
@@ -553,7 +616,37 @@ const uploadImage = async (image, temporaryCode, i, jHeader, usedPictureUuids = 
     );
   }
 
-  const IMG_RESPONSE = await requestImageUpload(image, temporaryCode, i, jHeader);
+  let uploadPath = image;
+  let temporaryImage = null;
+  let IMG_RESPONSE;
+
+  try {
+    IMG_RESPONSE = await requestImageUpload(uploadPath, temporaryCode, i, jHeader);
+  } catch (error) {
+    if (!isInvalidImageContentError(error)) throw error;
+
+    logger.warn(
+      `Image ${i + 1} was rejected as invalid content; retrying with the strict JPEG profile.`
+    );
+    temporaryImage = await prepareUploadImage(image, { compatibilityMode: true });
+    uploadPath = temporaryImage;
+
+    try {
+      IMG_RESPONSE = await requestImageUpload(uploadPath, temporaryCode, i, jHeader);
+    } catch (fallbackError) {
+      if (!isInvalidImageContentError(fallbackError)) throw fallbackError;
+
+      const warning = {
+        code: "BAKECAINCONTRII_IMAGE_SKIPPED_INVALID_CONTENT",
+        imageIndex: i,
+        sourcePath: sourcePath || image,
+        reason: "Bakecaincontrii ha rifiutato l'immagine anche dopo la conversione JPEG compatibile.",
+        responseBody: fallbackError?.details?.responseBody || "",
+      };
+      logger.warn(`Skipping rejected image ${i + 1}: ${warning.sourcePath}`);
+      return { picture: null, warning, temporaryImage };
+    }
+  }
 
   const candidates = collectPictureCandidates(IMG_RESPONSE);
   const picture = candidates.find((candidate) => !usedPictureUuids.has(candidate.uuid));
@@ -570,7 +663,7 @@ const uploadImage = async (image, temporaryCode, i, jHeader, usedPictureUuids = 
   logger.debug(
     `Upload for image ${i} completed (uuid=${picture.uuid}, candidates=${candidates.length})`
   );
-  return picture;
+  return { picture, warning: null, temporaryImage };
 };
 
 module.exports = uploadAdv;
