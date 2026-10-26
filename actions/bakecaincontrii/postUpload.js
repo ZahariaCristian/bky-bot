@@ -53,10 +53,21 @@ const getCookie = (jHeader) => {
   return cookie;
 };
 
+const summarizeAdvertisement = (adv = {}) => ({
+  category: adv.categorie || "",
+  promotion: adv?.promo?.active
+    ? `${adv?.promo?.product || adv?.promo?.visibility || "paid"}`.toLowerCase()
+    : "free",
+  images: Array.isArray(adv.picsAudit)
+    ? adv.picsAudit.length
+    : (Array.isArray(adv.pics) ? adv.pics.length : 0),
+  city: adv.city || "",
+});
+
 const uploadAdv = async (adv, jHeader) => {
   const clonedAdv = JSON.parse(JSON.stringify(adv)); // Deep clone
   const clonedHeader = { ...jHeader }; // Shallow clone if `jHeader` is flat
-  console.log("Starting upload of", clonedAdv);
+  console.log("[bakecaincontrii] Starting upload", summarizeAdvertisement(clonedAdv));
 
   try {
     logger.debug("Starting adv upload");
@@ -94,6 +105,7 @@ const uploadAdv = async (adv, jHeader) => {
     return {
       ...thirdResponse,
       imageWarnings: secondResponse.imageWarnings || [],
+      uploadedImages: secondResponse.uploadedImages || 0,
     };
   } catch (error) {
     logger.error(error);
@@ -349,15 +361,20 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
     );
   }
 
-  if (imageWarnings.length) {
-    logger.warn(
-      `Skipping ${imageWarnings.length} image(s) rejected by Bakecaincontrii; ` +
-      `saving ${IMAGE_STORE.length} valid image(s).`
+  if (imageWarnings.length || IMAGE_STORE.length !== formattedPics.length) {
+    throw createWorkflowError(
+      "BAKECAINCONTRII_IMAGE_UPLOAD_INCOMPLETE",
+      "images-step",
+      `Bakecaincontrii ha accettato ${IMAGE_STORE.length} immagini su ${formattedPics.length}; pubblicazione interrotta per evitare un annuncio senza tutte le foto.`,
+      {
+        requested: formattedPics.length,
+        uploaded: IMAGE_STORE.length,
+        imageWarnings,
+      }
     );
-    console.warn("[bakecaincontrii:images] Rejected images", imageWarnings);
-  } else {
-    logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
   }
+  logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
+
   const REQ_RESPONSE = await fetchWithRetry({
     url: `${BASE_URL}/u/post-insert-images/${TEMP_CODE}/`,
     method: "POST",
@@ -382,10 +399,33 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
     logger.error("Error during the POST request");
     return undefined;
   }
+
+  const galleryUrl = `${REQ_RESPONSE.url || ""}`;
+  if (!galleryUrl || /\/u\/post-insert-images\//i.test(galleryUrl)) {
+    const responseBody = await REQ_RESPONSE.clone().text().catch(() => "");
+    throw createWorkflowError(
+      "BAKECAINCONTRII_GALLERY_NOT_CONFIRMED",
+      "images-step",
+      "Bakecaincontrii non ha confermato il salvataggio della galleria.",
+      {
+        requested: formattedPics.length,
+        uploaded: IMAGE_STORE.length,
+        responseUrl: galleryUrl,
+        responseBody: responseBodySnippet(responseBody),
+      }
+    );
+  }
+
+  console.log("[bakecaincontrii:images] Gallery saved", {
+    requested: formattedPics.length,
+    uploaded: IMAGE_STORE.length,
+    nextUrl: galleryUrl,
+  });
   logger.success("Completed second-step successfully");
   return {
-    url: REQ_RESPONSE.url,
+    url: galleryUrl,
     imageWarnings,
+    uploadedImages: IMAGE_STORE.length,
   };
 };
 
@@ -393,10 +433,10 @@ const thirdStep = async (adv, url, jHeader) => {
   try {
     logger.debug("Initialized third-step on Bakeca (promo selection)");
 
-    console.log("ADVLOG:", adv);
-    console.log("URL:", url);
-    console.log("jHeader:", jHeader);
-    console.log("adv logs:", JSON.stringify(adv, null, 2));
+    console.log("[bakecaincontrii:promotion] Starting", {
+      ...summarizeAdvertisement(adv),
+      url,
+    });
 
     let TEMP_CODE = url.replace(/\/$/, "").split("/").pop();
     console.log("TEMP_CODE:", TEMP_CODE);
@@ -408,20 +448,13 @@ const thirdStep = async (adv, url, jHeader) => {
       params: ["private_code", "csrfmiddlewaretoken"],
     });
 
-    console.log("private_code:", private_code);
-    console.log("csrfmiddlewaretoken:", csrfmiddlewaretoken);
-
     let reqUrl = "";
-    let useCode = private_code;
 
     if (adv.promo.active) {
       reqUrl = `${BASE_URL}/u/post-promote/${private_code}/`;
     } else {
       reqUrl = `${BASE_URL}/u/post-publish/${private_code}`;
     }
-
-    console.log("Using code for requests:", useCode);
-    console.log("reqUrl:", reqUrl);
 
     const requestedProduct = `${adv.promo.product || adv.promo.visibility || ""}`.trim().toLowerCase();
     if (adv.promo.active && ["flash", "star"].includes(requestedProduct)) {
@@ -441,8 +474,6 @@ const thirdStep = async (adv, url, jHeader) => {
       private_code
     );
 
-    console.log("Request Body:", JSON.stringify(requestBody, null, 2));
-
     const REQ_RESPONSE = await fetchWithRetry({
       url: reqUrl,
       method: "POST",
@@ -455,7 +486,10 @@ const thirdStep = async (adv, url, jHeader) => {
       return undefined;
     }
 
-    console.log("REQ_RESPONSE:", REQ_RESPONSE);
+    console.log("[bakecaincontrii:promotion] Selection response", {
+      status: REQ_RESPONSE.status,
+      url: REQ_RESPONSE.url,
+    });
 
     logger.debug("✅ Selected the promo successfully");
 
@@ -473,19 +507,18 @@ const thirdStep = async (adv, url, jHeader) => {
           url: checkoutUrl,
           headers: headers,
         });
-        console.log("CHECKOUT_RESPONSE:", CHECKOUT_RESPONSE);
         if (!CHECKOUT_RESPONSE) {
           
           logger.warn("⚠️ CHECKOUT_RESPONSE is null, falling back to URL");
           logger.warn("Phone number is probably blocked");
           RESP_URI = null;
           //remotePostId = "bari.bakecaincontrii.com"; // Fallback value
-          console.log("Using fallback URL:", RESP_URI);
-        
         } else {
-          const responseText = await CHECKOUT_RESPONSE.text();
-          console.log("📝 Checkout Response Preview:", responseText.slice(0, 300));
           RESP_URI = CHECKOUT_RESPONSE.url;
+          console.log("[bakecaincontrii:promotion] Checkout page ready", {
+            status: CHECKOUT_RESPONSE.status,
+            url: RESP_URI,
+          });
           logger.success("✅ Retrieved the checkout page");
         }
       } catch (err) {

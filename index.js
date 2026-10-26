@@ -16,9 +16,21 @@ const port = 9999;
 // parse application/json
 app.use(bodyParser.json());
 
+const summarizeAdvertisement = (adv = {}, operation = "publish") => ({
+  operation,
+  category: adv.categorie || "",
+  promotion: adv?.promo?.active
+    ? `${adv?.promo?.product || adv?.promo?.visibility || "paid"}`.toLowerCase()
+    : "free",
+  images: Array.isArray(adv.picsAudit)
+    ? adv.picsAudit.length
+    : (Array.isArray(adv.pics) ? adv.pics.length : 0),
+  city: adv.city || "",
+});
+
 app.post("/", async (req, res) => {
   const { adv, cookies, expectedEmail } = req.body;
-  console.log("UPLOADING", JSON.stringify(req.body))
+  console.log("[bakecaincontrii] Request received", summarizeAdvertisement(adv));
   if (!adv) {
     console.log("MISSING ADV");
     return res.send("MISSING ADV");
@@ -53,6 +65,10 @@ app.post("/", async (req, res) => {
 
 app.post("/edit-adv", async (req, res) => {
   const { adv, cookies, remotePostID, expectedEmail } = req.body;
+  console.log("[bakecaincontrii] Request received", {
+    ...summarizeAdvertisement(adv, "edit"),
+    remotePostID: remotePostID || "",
+  });
 
   if (!adv) {
     console.log("MISSING ADV");
@@ -74,11 +90,19 @@ app.post("/edit-adv", async (req, res) => {
       return res.status(409).send("COOKIE_USER_MISMATCH");
     }
   }
-  res.send(
-    await editAdv(adv, cookies, remotePostID)
-      .then((data) => data)
-      .catch((e) => e)
-  );
+  try {
+    return res.send(await editAdv(adv, cookies, remotePostID));
+  } catch (error) {
+    const payload = {
+      ok: false,
+      code: error?.code || "BAKECAINCONTRII_EDIT_FAILED",
+      stage: error?.stage || "edit-images-step",
+      message: error?.message || `${error || "Errore sconosciuto"}`,
+      details: error?.details || {},
+    };
+    console.error("Bakecaincontrii edit failed", payload);
+    return res.status(502).json(payload);
+  }
 });
 
 app.post("/suspend-adv", async (req, res) => {
