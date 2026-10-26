@@ -236,7 +236,7 @@ const thirdStepBody = (
     supertop_selected: advpromo.premium ? 1 : 0,
     use_coupon_addons: true,
     add_ons: validAddons.join(","),
-    product_type: productType === "flash" ? "flash" : "top",
+    product_type: ["flash", "star"].includes(productType) ? productType : "top",
   };
 
   var form_data = new FormData();

@@ -19,6 +19,11 @@ const FormData = require("form-data");
 const { Signale } = require("signale");
 const { default: axios } = require("axios");
 const { prepareUploadImage, unlinkImages } = require("../../imageProcessor");
+const {
+  collectPictureCandidates,
+  responseBodySnippet,
+  summarizeImageResponse,
+} = require("./imageResponse");
 const options = {
   types: {
     debug: {
@@ -114,99 +119,6 @@ const isInvalidImageContentError = (error) => {
     return `${parsed?.error_code || ""}` === "2";
   } catch (parseError) {
     return /image with invalid content/i.test(`${responseBody || ""}`);
-  }
-};
-
-const normalizePictureSource = (source) => {
-  if (!source || typeof source !== "string") return "";
-  try {
-    return new URL(source, BASE_URL).href;
-  } catch (error) {
-    return source;
-  }
-};
-
-const normalizePictureCandidate = (candidate) => {
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    return null;
-  }
-
-  const uuid = candidate.uuid || candidate.pictureUuid || candidate.picture_uuid;
-  const source = normalizePictureSource(
-    candidate.url || candidate.src || candidate.imageUrl || candidate.image_url
-  );
-  if (!uuid || !source) return null;
-
-  return {
-    ...candidate,
-    uuid,
-    url: source,
-    src: source,
-  };
-};
-
-const collectPictureCandidates = (response) => {
-  const candidates = [];
-  const seen = new Set();
-  const addContainer = (container, depth = 0) => {
-    if (!container || depth > 2) return;
-    if (Array.isArray(container)) {
-      container.forEach((entry) => addContainer(entry, depth + 1));
-      return;
-    }
-    if (typeof container !== "object") return;
-
-    const normalized = normalizePictureCandidate(container);
-    if (normalized) {
-      const key = `${normalized.uuid}|${normalized.src}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        candidates.push(normalized);
-      }
-      return;
-    }
-
-    Object.values(container).forEach((entry) => {
-      if (entry && typeof entry === "object") addContainer(entry, depth + 1);
-    });
-  };
-
-  const containers = [
-    response?.pictures,
-    response?.picture,
-    response?.uploadedPictures,
-    response?.uploadedPicture,
-    response?.duplicates,
-    response?.duplicate,
-    response?.duplicatePictures,
-    response?.existingPictures,
-    response?.existingPicture,
-    response?.data?.pictures,
-    response?.data?.picture,
-    response?.data?.uploadedPictures,
-    response?.data?.duplicates,
-    response?.data?.existingPictures,
-    response,
-  ];
-  containers.forEach((container) => addContainer(container));
-  return candidates;
-};
-
-const summarizeImageResponse = (response, candidates) => ({
-  responseKeys: response && typeof response === "object" ? Object.keys(response) : [],
-  candidateCount: candidates.length,
-  candidateUuids: candidates.map((picture) => picture.uuid),
-  status: response?.status || response?.result || "",
-  message: `${response?.message || response?.error || response?.detail || ""}`.slice(0, 500),
-});
-
-const responseBodySnippet = (value, maxLength = 1000) => {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value.slice(0, maxLength);
-  try {
-    return JSON.stringify(value).slice(0, maxLength);
-  } catch (error) {
-    return `${value}`.slice(0, maxLength);
   }
 };
 
@@ -512,12 +424,12 @@ const thirdStep = async (adv, url, jHeader) => {
     console.log("reqUrl:", reqUrl);
 
     const requestedProduct = `${adv.promo.product || adv.promo.visibility || ""}`.trim().toLowerCase();
-    if (adv.promo.active && requestedProduct === "flash") {
-      logger.debug("Flash selected; handing the live promotion page to the browser workflow");
+    if (adv.promo.active && ["flash", "star"].includes(requestedProduct)) {
+      logger.debug(`${requestedProduct} selected; handing the live promotion page to the browser workflow`);
       return {
         uri: reqUrl,
         promo: true,
-        promotionType: "flash",
+        promotionType: requestedProduct,
         remotePostId: "",
       };
     }
