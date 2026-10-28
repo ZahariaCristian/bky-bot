@@ -534,6 +534,7 @@ const thirdStep = async (adv, url, jHeader) => {
     return {
       uri: RESP_URI,
       promo: adv.promo.active,
+      promotionType: requestedProduct || (adv.promo.active ? "top" : "free"),
       remotePostId,
     };
 
