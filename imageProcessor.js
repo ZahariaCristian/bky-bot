@@ -2,6 +2,7 @@ const sharp = require("sharp");
 const uuid = require("uuid");
 const fs = require("fs");
 const nodePath = require("path");
+const { getCompatibilityCanvas } = require("./imageCompatibility");
 
 const getImagesPath = () =>
   nodePath.resolve(process.env.IMAGE_PATH || nodePath.join(__dirname, "images"));
@@ -21,16 +22,30 @@ const prepareUploadImage = async (img, options = {}) => {
       throw new Error("dimensioni immagine non disponibili");
     }
 
-    await sharp(img, { failOn: "error" })
-      .rotate()
-      .resize({
-        width: compatibilityMode ? 2048 : 4096,
-        height: compatibilityMode ? 2048 : 4096,
+    const compatibilityCanvas = compatibilityMode
+      ? getCompatibilityCanvas(sourceMetadata)
+      : null;
+
+    const resizeOptions = compatibilityMode
+      ? {
+        ...compatibilityCanvas,
+        fit: "contain",
+        position: "centre",
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+        withoutEnlargement: false,
+      }
+      : {
+        width: 4096,
+        height: 4096,
         fit: "inside",
         withoutEnlargement: true,
-      })
+      };
+
+    await sharp(img, { failOn: "error" })
+      .rotate()
       .flatten({ background: "#ffffff" })
       .toColourspace("srgb")
+      .resize(resizeOptions)
       .jpeg({
         quality: compatibilityMode ? 82 : 90,
         chromaSubsampling: "4:2:0",
@@ -45,6 +60,10 @@ const prepareUploadImage = async (img, options = {}) => {
       outputMetadata.format !== "jpeg" ||
       !outputMetadata.width ||
       !outputMetadata.height ||
+      (compatibilityMode && (
+        outputMetadata.width !== compatibilityCanvas.width ||
+        outputMetadata.height !== compatibilityCanvas.height
+      )) ||
       outputSize <= 0
     ) {
       throw new Error("JPEG normalizzato non valido");
@@ -60,6 +79,7 @@ const prepareUploadImage = async (img, options = {}) => {
       outputHeight: outputMetadata.height,
       outputBytes: outputSize,
       compatibilityMode,
+      compatibilityCanvas,
     });
 
     return outputPath;

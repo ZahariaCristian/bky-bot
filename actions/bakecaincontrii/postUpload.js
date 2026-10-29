@@ -586,7 +586,7 @@ const uploadImage = async (
         code: "BAKECAINCONTRII_IMAGE_SKIPPED_INVALID_CONTENT",
         imageIndex: i,
         sourcePath: sourcePath || image,
-        reason: "Bakecaincontrii ha rifiutato l'immagine anche dopo la conversione JPEG compatibile.",
+        reason: "Bakecaincontrii ha rifiutato l'immagine anche dopo la rasterizzazione JPEG su tela compatibile; probabile rifiuto del contenuto remoto.",
         responseBody: fallbackError?.details?.responseBody || "",
       };
       logger.warn(`Skipping rejected image ${i + 1}: ${warning.sourcePath}`);
