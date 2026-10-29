@@ -19,6 +19,7 @@ const FormData = require("form-data");
 const { Signale } = require("signale");
 const { default: axios } = require("axios");
 const { prepareUploadImage, unlinkImages } = require("../../imageProcessor");
+const { canContinueWithRejectedImages } = require("../../imageCompatibility");
 const {
   collectPictureCandidates,
   responseBodySnippet,
@@ -106,6 +107,8 @@ const uploadAdv = async (adv, jHeader) => {
       ...thirdResponse,
       imageWarnings: secondResponse.imageWarnings || [],
       uploadedImages: secondResponse.uploadedImages || 0,
+      requestedImages: secondResponse.requestedImages || 0,
+      imagesComplete: secondResponse.imagesComplete !== false,
     };
   } catch (error) {
     logger.error(error);
@@ -361,7 +364,12 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
     );
   }
 
-  if (imageWarnings.length || IMAGE_STORE.length !== formattedPics.length) {
+  const canContinueWithAcceptedImages = canContinueWithRejectedImages({
+    requested: formattedPics.length,
+    uploaded: IMAGE_STORE.length,
+    warnings: imageWarnings,
+  });
+  if ((imageWarnings.length || IMAGE_STORE.length !== formattedPics.length) && !canContinueWithAcceptedImages) {
     throw createWorkflowError(
       "BAKECAINCONTRII_IMAGE_UPLOAD_INCOMPLETE",
       "images-step",
@@ -373,7 +381,18 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
       }
     );
   }
-  logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
+  if (canContinueWithAcceptedImages) {
+    console.warn("[bakecaincontrii:images] Continuing with accepted images after remote content rejection", {
+      requested: formattedPics.length,
+      uploaded: IMAGE_STORE.length,
+      skipped: imageWarnings.map((warning) => ({
+        position: Number.isInteger(warning.imageIndex) ? warning.imageIndex + 1 : null,
+        sourcePath: warning.sourcePath || "",
+      })),
+    });
+  } else {
+    logger.debug(`All ${IMAGE_STORE.length} image(s) uploaded; saving the gallery`);
+  }
 
   const REQ_RESPONSE = await fetchWithRetry({
     url: `${BASE_URL}/u/post-insert-images/${TEMP_CODE}/`,
@@ -426,6 +445,8 @@ const secondStep = async (picsAudit, url, jHeader, adv) => {
     url: galleryUrl,
     imageWarnings,
     uploadedImages: IMAGE_STORE.length,
+    requestedImages: formattedPics.length,
+    imagesComplete: imageWarnings.length === 0 && IMAGE_STORE.length === formattedPics.length,
   };
 };
 

@@ -3,7 +3,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { getCompatibilityCanvas } = require("../imageCompatibility");
+const {
+  canContinueWithRejectedImages,
+  getCompatibilityCanvas,
+} = require("../imageCompatibility");
 
 let sharp = null;
 try {
@@ -15,6 +18,30 @@ test("selects a standard compatibility canvas from the oriented image shape", ()
   assert.deepEqual(getCompatibilityCanvas({ width: 900, height: 400 }), { width: 1600, height: 1200 });
   assert.deepEqual(getCompatibilityCanvas({ width: 400, height: 900, orientation: 6 }), { width: 1600, height: 1200 });
   assert.deepEqual(getCompatibilityCanvas({ width: 500, height: 500 }), { width: 1400, height: 1400 });
+});
+
+test("continues only when every missing image has a confirmed remote content rejection", () => {
+  const contentWarning = { code: "BAKECAINCONTRII_IMAGE_SKIPPED_INVALID_CONTENT" };
+  assert.equal(canContinueWithRejectedImages({
+    requested: 5,
+    uploaded: 4,
+    warnings: [contentWarning],
+  }), true);
+  assert.equal(canContinueWithRejectedImages({
+    requested: 5,
+    uploaded: 3,
+    warnings: [contentWarning],
+  }), false);
+  assert.equal(canContinueWithRejectedImages({
+    requested: 5,
+    uploaded: 4,
+    warnings: [{ code: "BAKECAINCONTRII_IMAGE_SESSION_EXPIRED" }],
+  }), false);
+  assert.equal(canContinueWithRejectedImages({
+    requested: 1,
+    uploaded: 0,
+    warnings: [contentWarning],
+  }), false);
 });
 
 test("compatibility mode creates an opaque baseline JPEG on a safe canvas", {

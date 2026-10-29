@@ -9,4 +9,19 @@ const getCompatibilityCanvas = (metadata = {}) => {
   return { width: 1400, height: 1400 };
 };
 
-module.exports = { getCompatibilityCanvas };
+const canContinueWithRejectedImages = ({ requested, uploaded, warnings } = {}) => {
+  const requestedCount = Number(requested || 0);
+  const uploadedCount = Number(uploaded || 0);
+  const rejected = Array.isArray(warnings) ? warnings : [];
+
+  return requestedCount > 0 &&
+    uploadedCount > 0 &&
+    uploadedCount < requestedCount &&
+    rejected.length === requestedCount - uploadedCount &&
+    rejected.every((warning) => warning?.code === "BAKECAINCONTRII_IMAGE_SKIPPED_INVALID_CONTENT");
+};
+
+module.exports = {
+  canContinueWithRejectedImages,
+  getCompatibilityCanvas,
+};
